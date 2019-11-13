@@ -107,6 +107,7 @@ func (socket *Socket) StartWork() error {
 					_, _ = socket.Emit("error", err)
 				}else {
 					_, _ = socket.Emit("discontented", socket)
+					break	// 退出
 				}
 			} else {
 				_, _ = socket.Emit("message", &MessageContext{*msg, *socket})
