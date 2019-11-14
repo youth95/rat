@@ -38,3 +38,13 @@ func TestSocket_Receive(t *testing.T) {
 	a.Nil(err)
 	a.Equal(string(msg.Payload), "hello world")
 }
+
+func TestConnectTimeout(t *testing.T) {
+	a := assert.New(t)
+	_, err := ConnectTimeout("rat://0.0.0.0/hb", 1*time.Second)
+	a.NotNil(err)
+	_, err = ConnectTimeout(" r  ", 1*time.Second)
+	a.NotNil(err)
+	_, err = ConnectTimeout("mrat://0.0.0.0/hb", 1*time.Second)
+	a.NotNil(err)
+}
