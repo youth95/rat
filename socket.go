@@ -35,6 +35,20 @@ type MessageContext struct {
 	*Socket
 }
 
+// 响应消息
+func (messageContext *MessageContext) Reply(payload []byte) error {
+	_, err := messageContext.Send(payload, messageContext.Timeout.Sub(time.Now()))
+	return err
+}
+
+func (messageContext *MessageContext) ReplyString(payload string) error {
+	return messageContext.Reply([]byte(payload))
+}
+
+func (messageContext *MessageContext) ReplyStringF(format string, a ...interface{}) error {
+	return messageContext.ReplyString(fmt.Sprintf(format, a...))
+}
+
 func NewSocket(conn io.ReadWriter) *Socket {
 	return &Socket{EventEmitter{}, conn, false, false, []Middleware{}}
 }
@@ -107,11 +121,6 @@ func ConnectTimeoutWithMiddleware(uri string, timeout time.Duration, ms []Middle
 	}
 	if maybeError != nil {
 		return nil, maybeError
-	}
-	err = socket.StartWork()
-	if err != nil {
-		socket.StopWork()
-		return nil, err
 	}
 	return socket, nil
 }
@@ -212,31 +221,51 @@ func (socket *Socket) Send(payload []byte, timeout time.Duration) (int64, error)
 	return tl, nil
 }
 
+func (socket *Socket) SendString(payload string, timeout time.Duration) (int64, error) {
+	return socket.SendString(payload, timeout)
+}
+
+func (socket *Socket) SendStringF(timeout time.Duration, format string, a ...interface{}) (int64, error) {
+	return socket.SendString(fmt.Sprintf(format, a...), timeout)
+}
+
 // RequestTimeout 请求一个消息并等待响应,可传入超时时间
 func (socket *Socket) RequestTimeout(payload []byte, limit time.Duration) (*Message, error) {
 	msgCH := make(chan *Message)
-	socket.Once("message", func(msg interface{}) error {
-		// TODO 这里存在一个风险,如何
-		ctx := msg.(*MessageContext)
-		msgCH <- ctx.Message
-		return nil
-	})
+	errCH := make(chan error)
 	_, err := socket.Send(payload, limit)
 	if err != nil {
 		return nil, err
 	}
+	go func() {
+		msg, err := socket.ReceiveTimeout(limit)
+		if err != nil {
+
+		}
+		msgCH <- msg
+	}()
 	var msg *Message
 	select {
 	case msg = <-msgCH:
 		return msg, nil
+	case err = <-errCH:
+		return nil, err
 	case <-time.Tick(limit):
-		return nil,errors.New("request timeout")
+		return nil, errors.New("request timeout")
 	}
 }
 
 // Request 请求一个消息并等待响应,默认超时10s
 func (socket *Socket) Request(payload []byte) (*Message, error) {
 	return socket.RequestTimeout(payload, 10*time.Second)
+}
+
+func (socket *Socket) RequestString(payload string) (*Message, error) {
+	return socket.Request([]byte(payload))
+}
+
+func (socket *Socket) RequestStringF(format string, a ...interface{}) (*Message, error) {
+	return socket.RequestString(fmt.Sprintf(format, a...))
 }
 
 // StartWork 启动监听
@@ -277,4 +306,8 @@ func (socket *Socket) StartWork() error {
 func (socket *Socket) StopWork() {
 	socket.stop = true
 	socket.beginStart = false
+}
+
+func (socket *Socket) GetConn() io.ReadWriter {
+	return socket.conn
 }

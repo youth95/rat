@@ -156,6 +156,8 @@ func TestServer_UseAESM(t *testing.T) {
 	s = "hello world"
 	socket, err := ConnectTimeoutWithMiddleware("rat://0.0.0.0/", 10*time.Second, []Middleware{aesM})
 	a.Nil(err)
+	err = socket.StartWork()
+	a.Nil(err)
 	_, err = socket.Send([]byte(s), 10*time.Second)
 	a.Nil(err)
 	wg.Wait()
@@ -194,6 +196,40 @@ func TestServer_Request(t *testing.T) {
 	a.Nil(err)
 
 	res, err := socket.Request([]byte(s))
+	a.Nil(err)
+	a.Equal(s+" back", string(res.Payload))
+	err = app.Close()
+	a.Nil(err)
+	err = app.ln.Close()
+	a.NotNil(err)
+
+}
+
+func TestMessageContext_Reply(t *testing.T) {
+	a := assert.New(t)
+	var s, r string
+	var app Server
+	app.On("/", func(msg interface{}) error {
+		headMessage := msg.(*HeadMessage)
+		socket := headMessage.Socket
+		socket.AddListener("message", func(msg interface{}) error {
+			ctx := msg.(*MessageContext)
+			r = string(ctx.Payload)
+			err := ctx.ReplyStringF("%s back", r)
+			if err != nil {
+				return err
+			}
+			return nil
+		})
+		return nil
+	})
+	err := app.RunDefault()
+	a.Nil(err)
+	s = "hello world"
+	socket, err := ConnectTimeout("rat://0.0.0.0/", 10*time.Second)
+	a.Nil(err)
+
+	res, err := socket.RequestString(s)
 	a.Nil(err)
 	a.Equal(s+" back", string(res.Payload))
 	err = app.Close()
