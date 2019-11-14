@@ -1,7 +1,6 @@
 package rat
 
 import (
-	"fmt"
 	"github.com/stretchr/testify/assert"
 	"net"
 	"sync"
@@ -180,7 +179,6 @@ func TestServer_Request(t *testing.T) {
 		socket.AddListener("message", func(msg interface{}) error {
 			ctx := msg.(*MessageContext)
 			r = string(ctx.Payload)
-			fmt.Println("message")
 			_, err := ctx.Send([]byte(r+" back"), ctx.Timeout.Sub(time.Now()))
 			if err != nil {
 				return err

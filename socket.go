@@ -162,7 +162,6 @@ func (socket *Socket) ReceiveTimeout(limit time.Duration) (*Message, error) {
 						if err != nil {
 							errCH <- err
 						}
-						fmt.Println("socket message r ", payload)
 						msgCH <- &Message{timeout, l, payload,}
 						return
 					} else {
