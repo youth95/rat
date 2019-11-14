@@ -21,6 +21,7 @@ type HeadMessage struct {
 	*url.URL
 }
 
+// 处理握手逻辑
 func (server *Server) handHeadMessage(socket *Socket, head *Message) error {
 	urlInfo, err := url.ParseRequestURI(string(head.Payload))
 	if err != nil {

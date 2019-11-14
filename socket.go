@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/url"
 	"strconv"
-	"sync"
 	"time"
 )
 
@@ -57,12 +56,8 @@ func ConnectTimeout(uri string, timeout time.Duration) (*Socket, error) {
 	return ConnectTimeoutWithMiddleware(uri, timeout, nil)
 }
 
+// ConnectTimeoutWithMiddleware
 func ConnectTimeoutWithMiddleware(uri string, timeout time.Duration, ms []Middleware) (*Socket, error) {
-	var wg sync.WaitGroup
-	wg.Add(1)
-	isTimeout := false
-	isFinish := false
-	var maybeError error
 	connectInfo, err := url.ParseRequestURI(uri)
 	if err != nil {
 		return nil, err
@@ -85,42 +80,16 @@ func ConnectTimeoutWithMiddleware(uri string, timeout time.Duration, ms []Middle
 	if ms != nil {
 		socket.middleware = ms
 	}
-
-	go func() {
-		res, err := socket.ReceiveTimeout(timeout)
-		if err != nil {
-			maybeError = err
-		}
-		if err == nil {
-			if res.Payload[0] == 1 {
-				maybeError = errors.New(fmt.Sprintf("not found path %s", connectInfo.Path))
-			} else if res.Payload[0] == 2 {
-				maybeError = errors.New("server error")
-			}
-		}
-		if isTimeout == false {
-			isFinish = true
-			wg.Done()
-		}
-	}()
-
-	go func() {
-		time.Sleep(timeout)
-		if isFinish == false {
-			isTimeout = true
-			wg.Done()
-		}
-	}()
-	_, err = socket.Send([]byte(uri), timeout)
+	// 握手
+	res, err := socket.RequestTimeout([]byte(uri), timeout)
 	if err != nil {
 		return nil, err
 	}
-	wg.Wait()
-	if isTimeout {
-		return nil, errors.New("connect timeout")
-	}
-	if maybeError != nil {
-		return nil, maybeError
+	switch res.Payload[0] {
+	case 1:
+		return nil, errors.New(fmt.Sprintf("not found path %s", connectInfo.Path))
+	case 2:
+		return nil, errors.New("server error")
 	}
 	return socket, nil
 }
