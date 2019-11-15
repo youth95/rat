@@ -23,7 +23,7 @@ type Message struct {
 
 type Socket struct {
 	EventEmitter
-	conn       io.ReadWriter
+	conn       net.Conn
 	beginStart bool
 	stop       bool
 	middleware []Middleware
@@ -48,7 +48,7 @@ func (messageContext *MessageContext) ReplyStringF(format string, a ...interface
 	return messageContext.ReplyString(fmt.Sprintf(format, a...))
 }
 
-func NewSocket(conn io.ReadWriter) *Socket {
+func NewSocket(conn net.Conn) *Socket {
 	return &Socket{EventEmitter{}, conn, false, false, []Middleware{}}
 }
 
@@ -99,6 +99,8 @@ func (socket *Socket) ReceiveTimeout(limit time.Duration) (*Message, error) {
 	errCH := make(chan error)
 	msgCH := make(chan *Message)
 
+	fmt.Println("limit",limit)
+
 	go func() {
 		start := time.Now()
 		reader := bufio.NewReader(socket.conn)
@@ -108,16 +110,36 @@ func (socket *Socket) ReceiveTimeout(limit time.Duration) (*Message, error) {
 				errCH <- errors.New("socket receive timeout")
 				return
 			}
+			if limit >0 {
+				err := socket.conn.SetReadDeadline(now.Add(limit))
+				if err != nil {
+					errCH <- err
+					return
+				}
+			}
 			timeout, l32, err := ReadFixedHeader(reader)
-			l := int(l32)
 			if err != nil {
 				errCH <- err
 				return
 			}
+			fmt.Println("ReadFixedHeader",timeout, l32,)
+			l := int(l32)
+
 
 			if now.After(*timeout) && !now.Equal(*timeout) { // 如果当前时间在消息时限之后 且 当前时间不等于限时时间则说明该消息已经过时需要跳过
 				for l > 0 {
 					p := make([]byte, l)
+					if limit >0 {
+						err := socket.conn.SetReadDeadline(now.Add(limit))
+						if err != nil {
+							errCH <- err
+							return
+						}
+					}
+					if err != nil {
+						errCH <- err
+						return
+					}
 					n, err := reader.Read(p)
 					if err != nil {
 						errCH <- err
@@ -130,15 +152,22 @@ func (socket *Socket) ReceiveTimeout(limit time.Duration) (*Message, error) {
 				var payload []byte
 				payloadBuf := make([]byte, l)
 				for len(payload) != l {
+					err := socket.conn.SetReadDeadline(now.Add(limit))
+					if err != nil {
+						errCH <- err
+						return
+					}
 					n, err := reader.Read(payloadBuf)
 					if err != nil {
 						errCH <- err
+						return
 					}
 					if n+len(payload) >= l {
 						payload = append(payload, payloadBuf[:n]...)
 						payload, err = socket.middlewareReadHandData(payload)
 						if err != nil {
 							errCH <- err
+							return
 						}
 						msgCH <- &Message{timeout, l, payload,}
 						return
@@ -158,6 +187,7 @@ func (socket *Socket) ReceiveTimeout(limit time.Duration) (*Message, error) {
 	case msg = <-msgCH:
 		return msg, nil
 	case err = <-errCH:
+		fmt.Println(err)
 		return nil, err
 	}
 }
@@ -202,17 +232,24 @@ func (socket *Socket) SendStringF(timeout time.Duration, format string, a ...int
 func (socket *Socket) RequestTimeout(payload []byte, limit time.Duration) (*Message, error) {
 	msgCH := make(chan *Message)
 	errCH := make(chan error)
-	_, err := socket.Send(payload, limit)
+	tl, err := socket.Send(payload, limit)
 	if err != nil {
 		return nil, err
 	}
 	go func() {
-		msg, err := socket.ReceiveTimeout(limit)
-		if err != nil {
-
+		for {
+			msg, err := socket.ReceiveTimeout(limit)
+			if err != nil {
+				errCH <- err
+				return
+			}
+			if msg.Timeout.Unix() == tl {
+				msgCH <- msg
+				return
+			}
 		}
-		msgCH <- msg
 	}()
+
 	var msg *Message
 	select {
 	case msg = <-msgCH:

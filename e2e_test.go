@@ -1,6 +1,7 @@
 package rat
 
 import (
+	"fmt"
 	"github.com/stretchr/testify/assert"
 	"net"
 	"sync"
@@ -35,6 +36,7 @@ func TestSocket_StartWork(t *testing.T) {
 		})
 
 		err = socket.StartWork()
+		fmt.Println("startWork")
 		a.Nil(err)
 	}()
 	s = "hello world"

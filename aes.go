@@ -5,16 +5,16 @@ import (
 	"crypto/cipher"
 )
 
-func padding(src []byte, blocksize int) []byte {
-	padnum := blocksize - len(src)%blocksize
-	pad := bytes.Repeat([]byte{byte(padnum)}, padnum)
+func padding(src []byte, blockSize int) []byte {
+	size := blockSize - len(src)%blockSize
+	pad := bytes.Repeat([]byte{byte(size)}, size)
 	return append(src, pad...)
 }
 
-func unpadding(src []byte) []byte {
+func unPadding(src []byte) []byte {
 	n := len(src)
-	unpadnum := int(src[n-1])
-	return src[:n-unpadnum]
+	size := int(src[n-1])
+	return src[:n-size]
 }
 
 func encryptAES(src []byte, block cipher.Block, key []byte, ) []byte {
@@ -27,6 +27,6 @@ func encryptAES(src []byte, block cipher.Block, key []byte, ) []byte {
 func decryptAES(src []byte, block cipher.Block, key []byte) []byte {
 	mode := cipher.NewCBCDecrypter(block, key)
 	mode.CryptBlocks(src, src)
-	src = unpadding(src)
+	src = unPadding(src)
 	return src
 }
