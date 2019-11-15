@@ -99,7 +99,16 @@ func (socket *Socket) ReceiveTimeout(limit time.Duration) (*Message, error) {
 	errCH := make(chan error)
 	msgCH := make(chan *Message)
 
-	fmt.Println("limit",limit)
+	setTimeout := func() error {
+		if limit >0 {
+			err := socket.conn.SetReadDeadline(time.Now().Add(limit))
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
 
 	go func() {
 		start := time.Now()
@@ -110,32 +119,23 @@ func (socket *Socket) ReceiveTimeout(limit time.Duration) (*Message, error) {
 				errCH <- errors.New("socket receive timeout")
 				return
 			}
-			if limit >0 {
-				err := socket.conn.SetReadDeadline(time.Now().Add(limit))
-				if err != nil {
-					errCH <- err
-					return
-				}
-			}
-			timeout, l32, err := ReadFixedHeader(reader)
+			err := setTimeout()
 			if err != nil {
 				errCH <- err
 				return
 			}
-			fmt.Println("ReadFixedHeader",timeout, l32,)
+			timeout, l32, err := ReadFixedHeader(reader)	// TODO 这个地方会读两次
+			if err != nil {
+				errCH <- err
+				return
+			}
 			l := int(l32)
 
 
 			if now.After(*timeout) && !now.Equal(*timeout) { // 如果当前时间在消息时限之后 且 当前时间不等于限时时间则说明该消息已经过时需要跳过
 				for l > 0 {
 					p := make([]byte, l)
-					if limit >0 {
-						err := socket.conn.SetReadDeadline(time.Now().Add(limit))
-						if err != nil {
-							errCH <- err
-							return
-						}
-					}
+					err := setTimeout()
 					if err != nil {
 						errCH <- err
 						return
@@ -152,7 +152,7 @@ func (socket *Socket) ReceiveTimeout(limit time.Duration) (*Message, error) {
 				var payload []byte
 				payloadBuf := make([]byte, l)
 				for len(payload) != l {
-					err := socket.conn.SetReadDeadline(time.Now().Add(limit))
+					err := setTimeout()
 					if err != nil {
 						errCH <- err
 						return
@@ -187,7 +187,6 @@ func (socket *Socket) ReceiveTimeout(limit time.Duration) (*Message, error) {
 	case msg = <-msgCH:
 		return msg, nil
 	case err = <-errCH:
-		fmt.Println(err)
 		return nil, err
 	}
 }
