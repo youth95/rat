@@ -111,7 +111,7 @@ func (socket *Socket) ReceiveTimeout(limit time.Duration) (*Message, error) {
 				return
 			}
 			if limit >0 {
-				err := socket.conn.SetReadDeadline(now.Add(limit))
+				err := socket.conn.SetReadDeadline(time.Now().Add(limit))
 				if err != nil {
 					errCH <- err
 					return
@@ -130,7 +130,7 @@ func (socket *Socket) ReceiveTimeout(limit time.Duration) (*Message, error) {
 				for l > 0 {
 					p := make([]byte, l)
 					if limit >0 {
-						err := socket.conn.SetReadDeadline(now.Add(limit))
+						err := socket.conn.SetReadDeadline(time.Now().Add(limit))
 						if err != nil {
 							errCH <- err
 							return
@@ -152,7 +152,7 @@ func (socket *Socket) ReceiveTimeout(limit time.Duration) (*Message, error) {
 				var payload []byte
 				payloadBuf := make([]byte, l)
 				for len(payload) != l {
-					err := socket.conn.SetReadDeadline(now.Add(limit))
+					err := socket.conn.SetReadDeadline(time.Now().Add(limit))
 					if err != nil {
 						errCH <- err
 						return
