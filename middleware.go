@@ -38,6 +38,7 @@ func (socket *Socket) middlewareWriteHandData(data []byte) ([]byte, error) {
 	return tmp, nil
 }
 
+
 type AESMiddleware struct {
 	block cipher.Block
 	key   []byte

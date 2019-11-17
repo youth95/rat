@@ -1,40 +1,44 @@
 package rat
 
 import (
+	"bytes"
 	"encoding/binary"
-	"io"
-	"time"
 )
 
-const FixedHeaderSize = 12
+const FixedHeaderSize = 5
 
-func WriteFixedHeaderFromMessage(w io.Writer, timeout time.Duration, msg []byte) (int64, error) {
-	time.Sleep(1 * time.Microsecond) // 确保time.Now()是唯一的
-	tl := time.Now().Add(timeout).Unix()
-	err := binary.Write(w, binary.LittleEndian, tl)
-	if err != nil {
-		return 0, err
-	}
-	err = binary.Write(w, binary.LittleEndian, int32(len(msg)))
-	if err != nil {
-		return 0, err
-	}
-	return tl, nil
+type FixedHeader struct {
+	MT byte
+	ML int32
 }
 
-func ReadFixedHeader(r io.Reader) (*time.Time, int32, error) {
-	var t time.Time
-	var ut int64
-	var l int32
-	err := binary.Read(r, binary.LittleEndian, &ut)
+const (
+	MTRequest = iota
+	MTResponse
+	MTHB
+)
 
+func (fixedHeader *FixedHeader) Bytes() []byte {
+	buf := bytes.NewBuffer([]byte{})
+	buf.WriteByte(fixedHeader.MT)
+	err := binary.Write(buf, binary.LittleEndian, fixedHeader.ML)
 	if err != nil {
-		return nil, 0, err
+		panic(err)
 	}
-	err = binary.Read(r, binary.LittleEndian, &l)
+	return buf.Bytes()
+}
+
+func ParseFixedHeader(p []byte) *FixedHeader {
+	var fixedHeader FixedHeader
+	buf := bytes.NewBuffer(p)
+	mt, err := buf.ReadByte()
 	if err != nil {
-		return nil, 0, err
+		panic(err)
 	}
-	t = time.Unix(ut, 0)
-	return &t, l, nil
+	fixedHeader.MT = mt
+	err = binary.Read(buf, binary.LittleEndian, &fixedHeader.ML)
+	if err != nil {
+		panic(err)
+	}
+	return &fixedHeader
 }

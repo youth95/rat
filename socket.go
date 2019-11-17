@@ -1,318 +1,200 @@
 package rat
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
-	"io"
 	"net"
-	"net/url"
-	"strconv"
+	"sync"
 	"time"
 )
 
-const (
-	DefaultServerPort = 3399
-)
-
 type Message struct {
-	Timeout *time.Time
+	*FixedHeader
+	Payload []byte
+}
+
+type RequestMessage struct {
+	Length  int
+	Event   string
+	Payload []byte
+}
+
+type ResponseMessage struct {
 	Length  int
 	Payload []byte
 }
 
+const (
+	DefaultConnectTimeOut   = 10 * time.Second
+	DefaultRequestTimeOut   = 10 * time.Second
+	DefaultHBTimeOut        = 3 * time.Second
+	DefaultServerPort       = 3399
+	SocketEventError        = "error"
+	SocketEventRequest      = "request"
+	SocketEventResponse     = "response"
+	SocketEventHB           = "hb"
+	SocketEventDisconnected = "disconnected"
+)
+
+var ErrorUriIsRequired = errors.New("uri is required")
+
 type Socket struct {
 	EventEmitter
-	conn       net.Conn
-	beginStart bool
-	stop       bool
+	conn       *TcpConnFull
+	Conn       *net.TCPConn
 	middleware []Middleware
+	ms         *sync.Mutex
+	handlerMap sync.Map
+	closed     bool
 }
 
-type MessageContext struct {
-	*Message
-	*Socket
+func NewSocket(conn *TcpConnFull, ms []Middleware) *Socket {
+	socket := &Socket{EventEmitter{}, conn, conn.TCPConn, ms, &sync.Mutex{}, sync.Map{}, false}
+	return socket
 }
 
-// 响应消息
-func (messageContext *MessageContext) Reply(payload []byte) error {
-	_, err := messageContext.Send(payload, messageContext.Timeout.Sub(time.Now()))
-	return err
-}
-
-func (messageContext *MessageContext) ReplyString(payload string) error {
-	return messageContext.Reply([]byte(payload))
-}
-
-func (messageContext *MessageContext) ReplyStringF(format string, a ...interface{}) error {
-	return messageContext.ReplyString(fmt.Sprintf(format, a...))
-}
-
-func NewSocket(conn net.Conn) *Socket {
-	return &Socket{EventEmitter{}, conn, false, false, []Middleware{}}
-}
-
-func ConnectTimeout(uri string, timeout time.Duration) (*Socket, error) {
-	return ConnectTimeoutWithMiddleware(uri, timeout, nil)
-}
-
-// ConnectTimeoutWithMiddleware
-func ConnectTimeoutWithMiddleware(uri string, timeout time.Duration, ms []Middleware) (*Socket, error) {
-	connectInfo, err := url.ParseRequestURI(uri)
-	if err != nil {
-		return nil, err
-	}
-	if connectInfo.Scheme != "rat" {
-		return nil, errors.New("connect uri.Scheme must be 'rat'")
-	}
-	portStr := connectInfo.Port()
-	if portStr == "" {
-		portStr = strconv.FormatInt(DefaultServerPort, 10)
-	}
-	host := connectInfo.Hostname()
-
-	addr := fmt.Sprintf("%s:%s", host, portStr)
-	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		return nil, err
-	}
-	socket := NewSocket(conn)
-	if ms != nil {
-		socket.middleware = ms
-	}
-	// 握手
-	res, err := socket.RequestTimeout([]byte(uri), timeout)
-	if err != nil {
-		return nil, err
-	}
-	switch res.Payload[0] {
-	case 1:
-		return nil, errors.New(fmt.Sprintf("not found path %s", connectInfo.Path))
-	case 2:
-		return nil, errors.New("server error")
-	}
-	return socket, nil
-}
-
-// Receive 读取一个没有超时的消息 若limit时间之后仍然没读到,则返回一个错误
-func (socket *Socket) ReceiveTimeout(limit time.Duration) (*Message, error) {
-	errCH := make(chan error)
-	msgCH := make(chan *Message)
-
-	setTimeout := func() error {
-		if limit >0 {
-			err := socket.conn.SetReadDeadline(time.Now().Add(limit))
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
-
-	go func() {
-		start := time.Now()
-		reader := bufio.NewReader(socket.conn)
-		for {
-			now := time.Now()
-			if limit > 0 && start.Add(limit).Before(now) {
-				errCH <- errors.New("socket receive timeout")
-				return
-			}
-			err := setTimeout()
-			if err != nil {
-				errCH <- err
-				return
-			}
-			timeout, l32, err := ReadFixedHeader(reader)	// TODO 这个地方会读两次
-			if err != nil {
-				errCH <- err
-				return
-			}
-			l := int(l32)
-
-
-			if now.After(*timeout) && !now.Equal(*timeout) { // 如果当前时间在消息时限之后 且 当前时间不等于限时时间则说明该消息已经过时需要跳过
-				for l > 0 {
-					p := make([]byte, l)
-					err := setTimeout()
-					if err != nil {
-						errCH <- err
-						return
-					}
-					n, err := reader.Read(p)
-					if err != nil {
-						errCH <- err
-						return
-					}
-					l -= n
-				}
-				continue // read next message
-			} else {
-				var payload []byte
-				payloadBuf := make([]byte, l)
-				for len(payload) != l {
-					err := setTimeout()
-					if err != nil {
-						errCH <- err
-						return
-					}
-					n, err := reader.Read(payloadBuf)
-					if err != nil {
-						errCH <- err
-						return
-					}
-					if n+len(payload) >= l {
-						payload = append(payload, payloadBuf[:n]...)
-						payload, err = socket.middlewareReadHandData(payload)
-						if err != nil {
-							errCH <- err
-							return
-						}
-						msgCH <- &Message{timeout, l, payload,}
-						return
-					} else {
-						payload = append(payload, payloadBuf[:n]...)
-					}
-					payloadBuf = make([]byte, l-(n+len(payload))) // 防止读多了
-				}
-			}
-		}
-	}()
-	var msg *Message
-	var err error
-	select {
-	case <-time.Tick(limit):
-		return nil, errors.New("socket receive timeout")
-	case msg = <-msgCH:
-		return msg, nil
-	case err = <-errCH:
-		return nil, err
-	}
-}
-
-// Receive 读取一个没有超时的消息 无限等待
-func (socket *Socket) Receive() (*Message, error) {
-	return socket.ReceiveTimeout(-1)
-}
-
-// Send 发送一个消息
-func (socket *Socket) Send(payload []byte, timeout time.Duration) (int64, error) {
-	w := socket.conn
-	payload, err := socket.middlewareWriteHandData(payload)
-	if err != nil {
-		return 0, err
-	}
-	tl, err := WriteFixedHeaderFromMessage(w, timeout, payload)
-	if err != nil {
-		return 0, err
-	}
-	l := len(payload)
-	for l != 0 {
-		n, err := w.Write(payload)
-		if err != nil {
-			return 0, err
-		}
-		l -= n
-		payload = payload[n:]
-	}
-	return tl, nil
-}
-
-func (socket *Socket) SendString(payload string, timeout time.Duration) (int64, error) {
-	return socket.SendString(payload, timeout)
-}
-
-func (socket *Socket) SendStringF(timeout time.Duration, format string, a ...interface{}) (int64, error) {
-	return socket.SendString(fmt.Sprintf(format, a...), timeout)
-}
-
-// RequestTimeout 请求一个消息并等待响应,可传入超时时间
-func (socket *Socket) RequestTimeout(payload []byte, limit time.Duration) (*Message, error) {
-	msgCH := make(chan *Message)
-	errCH := make(chan error)
-	tl, err := socket.Send(payload, limit)
-	if err != nil {
-		return nil, err
-	}
-	go func() {
-		for {
-			msg, err := socket.ReceiveTimeout(limit)
-			if err != nil {
-				errCH <- err
-				return
-			}
-			if msg.Timeout.Unix() == tl {
-				msgCH <- msg
-				return
-			}
-		}
-	}()
-
-	var msg *Message
-	select {
-	case msg = <-msgCH:
-		return msg, nil
-	case err = <-errCH:
-		return nil, err
-	case <-time.Tick(limit):
-		return nil, errors.New("request timeout")
-	}
-}
-
-// Request 请求一个消息并等待响应,默认超时10s
-func (socket *Socket) Request(payload []byte) (*Message, error) {
-	return socket.RequestTimeout(payload, 10*time.Second)
-}
-
-func (socket *Socket) RequestString(payload string) (*Message, error) {
-	return socket.Request([]byte(payload))
-}
-
-func (socket *Socket) RequestStringF(format string, a ...interface{}) (*Message, error) {
-	return socket.RequestString(fmt.Sprintf(format, a...))
-}
-
-// StartWork 启动监听
-func (socket *Socket) StartWork() error {
-
-	if socket.beginStart {
-		return errors.New("socket already work started")
-	} else {
-		socket.beginStart = true
-		socket.stop = false
-	}
-	_, err := socket.Emit("contented", socket)
+// SendRequest 发送一个请求
+func (socket *Socket) SendRequest(payload []byte, limit time.Duration) error {
+	var fh FixedHeader
+	fh.MT = MTRequest
+	fh.ML = int32(len(payload))
+	err := socket.conn.WriteFull(fh.Bytes(), limit)
 	if err != nil {
 		return err
 	}
-	go func() {
-		for {
-			if socket.stop {
-				break
-			}
-			msg, err := socket.Receive()
-			if err != nil {
-				if err != io.EOF {
-					_, _ = socket.Emit("error", err)
-				} else {
-					_, _ = socket.Emit("discontented", socket)
-					break // 退出
-				}
-			} else {
-				_, _ = socket.Emit("message", &MessageContext{msg, socket})
-			}
-		}
-	}()
+	payload, err = socket.middlewareWriteHandData(payload)
+	if err != nil {
+		return err
+	}
+	err = socket.conn.WriteFull(payload, limit)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
-// StopWork 停止监听
-func (socket *Socket) StopWork() {
-	socket.stop = true
-	socket.beginStart = false
+// SendResponse 发送一个响应
+func (socket *Socket) SendResponse(payload []byte, limit time.Duration) error {
+	var fh FixedHeader
+	fh.MT = MTResponse
+	fh.ML = int32(len(payload))
+	err := socket.conn.WriteFull(fh.Bytes(), limit)
+	if err != nil {
+		return err
+	}
+	payload, err = socket.middlewareWriteHandData(payload)
+	if err != nil {
+		return err
+	}
+	err = socket.conn.WriteFull(payload, limit)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
-func (socket *Socket) GetConn() io.ReadWriter {
-	return socket.conn
+// SendHB 发送心跳
+func (socket *Socket) SendHB(limit time.Duration) error {
+	var fh FixedHeader
+	fh.MT = MTHB
+	fh.ML = 0
+	err := socket.conn.WriteFull(fh.Bytes(), limit)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// Request 请求
+func (socket *Socket) Request(payload []byte, limit time.Duration) ([]byte, error) {
+	payloadCH := make(chan []byte)
+	socket.Once(SocketEventResponse, func(msg interface{}) error {
+		payloadCH <- msg.([]byte)
+		return nil
+	})
+	err := socket.SendRequest(payload, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	return <-payloadCH, nil
+}
+
+// HB 只有开启HB的时候 上层应用才能检测到socket连接断开
+func (socket *Socket) HB() {
+	for {
+		time.Sleep(DefaultHBTimeOut) // TODO 心跳间隔应该由另外的变量表示
+		err := socket.SendHB(DefaultHBTimeOut)
+		if err != nil {
+			_, _ = socket.Emit(SocketEventDisconnected, nil)
+			socket.closed = true
+			err := socket.conn.Close()
+			if err != nil {
+				fmt.Println(err)
+			}
+			fmt.Println("hb go func exit")
+
+			return
+		}
+	}
+}
+
+// Loop 只有开启Loop的时候 上层应用才能使用Request方法
+func (socket *Socket) Loop(limit time.Duration) {
+	for {
+		msg, err := socket.ReceiveMessage(limit)
+		if err != nil {
+			_, _ = socket.Emit(SocketEventError, err)
+			if socket.closed {
+				fmt.Println("loop fun exit")
+				return
+			} else {
+				continue
+			}
+		}
+		switch msg.MT {
+		case MTRequest:
+			_, _ = socket.Emit(SocketEventRequest, msg.Payload)
+			break
+		case MTResponse:
+			_, _ = socket.Emit(SocketEventResponse, msg.Payload)
+			break
+		case MTHB:
+			_, _ = socket.Emit(SocketEventHB, nil)
+			break
+		default:
+			_, _ = socket.Emit(SocketEventError, errors.New("unknown MT"))
+			return
+		}
+	}
+}
+
+func (socket *Socket) ReceiveMessage(limit time.Duration) (*Message, error) {
+	var msg Message
+	buf := make([]byte, FixedHeaderSize)
+	err := socket.conn.ReadFull(buf, limit)
+	if err != nil {
+		return nil, err
+	}
+	fh := ParseFixedHeader(buf)
+	msg.FixedHeader = fh
+	if fh.ML == 0 {
+		msg.Payload = []byte{}
+		return &msg, nil
+	}
+	buf = make([]byte, fh.ML)
+	err = socket.conn.ReadFull(buf, limit)
+	if err != nil {
+		return nil, err
+	}
+	buf, err = socket.middlewareReadHandData(buf)
+	if err != nil {
+		return nil, err
+	}
+	msg.Payload = buf
+	return &msg, nil
+}
+
+func (socket *Socket) CloseLoop() {
+	socket.closed = true
 }

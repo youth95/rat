@@ -6,14 +6,16 @@ import (
 	"log"
 	"net"
 	"net/url"
-	"time"
 )
+
+var SYSEventConnect = "connect"
 
 type Server struct {
 	EventEmitter
 	started          bool
 	ln               net.Listener
 	globalMiddleware []Middleware
+	EnterPoint       map[string]EnterHandler
 }
 
 type HeadMessage struct {
@@ -21,25 +23,12 @@ type HeadMessage struct {
 	*url.URL
 }
 
-// 处理握手逻辑
-func (server *Server) handHeadMessage(socket *Socket, head *Message) error {
-	urlInfo, err := url.ParseRequestURI(string(head.Payload))
-	if err != nil {
-		return err
-	}
-	ok, err := server.Emit(urlInfo.Path, &HeadMessage{socket, urlInfo}) // dispatch message
-	if err != nil {
-		_, err = socket.Send([]byte{2}, head.Timeout.Sub(time.Now())) // 响应head包
-		return err
-	}
-	if ok {
-		_, err = socket.Send([]byte{0}, head.Timeout.Sub(time.Now())) // 响应head包
-	} else {
-		_, err = socket.Send([]byte{1}, head.Timeout.Sub(time.Now())) // 响应head包
-		return errors.New(fmt.Sprintf("not found path %s", urlInfo.Path))
-	}
-	return nil
+type MessageContext struct {
+	*Message
+	*Socket
 }
+
+type EnterHandler func(path string, url string, socket *Socket)
 
 func (server *Server) Run(addr string) error {
 	if server.started == true {
@@ -57,50 +46,44 @@ func (server *Server) Run(addr string) error {
 		}
 
 	}
-	server.Once("start", func(msg interface{}) error {
-		server.started = true
-		return nil
-	})
-	ln, err := net.Listen("tcp", addr)
+	rAddr, err := net.ResolveTCPAddr("tcp", addr)
+	if err != nil {
+		return err
+	}
+	ln, err := net.ListenTCP("tcp", rAddr)
 	if err != nil {
 		return err
 	}
 	server.ln = ln
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				emitError(err)
-				continue
-			}
-			go func() {
-				socket := NewSocket(conn)
-				socket.Uses(server.globalMiddleware)
-				head, err := socket.ReceiveTimeout(10 * time.Second)
-
-				if err != nil {
-					emitError(err)
-					return
-				}
-				_, err = server.Emit("connect", &MessageContext{head, socket})
-				if err != nil {
-					emitError(err)
-					return
-				}
-				err = server.handHeadMessage(socket, head)
-				if err != nil {
-					emitError(err)
-					return
-				}
-				// 开启工作进程
-				err = socket.StartWork()
-				if err != nil {
-					emitError(err)
-				}
-			}()
+	for {
+		conn, err := ln.AcceptTCP()
+		if err != nil {
+			emitError(err)
+			continue
 		}
-	}()
-	return nil
+		socket := NewSocket(NewTcpConnFull(conn), server.globalMiddleware)
+		// client must Request a uri
+		msg, err := socket.ReceiveMessage(DefaultRequestTimeOut)
+		if err != nil {
+			emitError(err)
+			_ = conn.Close()
+			continue
+		}
+		urlStr := string(msg.Payload)
+		urlInfo, err := url.ParseRequestURI(urlStr)
+		if err != nil {
+			emitError(err)
+			_ = conn.Close()
+			continue
+		}
+		if server.EnterPoint[urlInfo.Path] != nil {
+			err = socket.SendResponse([]byte{0}, DefaultRequestTimeOut) // 响应head包
+			server.EnterPoint[urlInfo.Path](urlInfo.Path, urlStr, socket)
+		} else {
+			err = socket.SendResponse([]byte{1}, DefaultRequestTimeOut) // 响应head包
+			return errors.New(fmt.Sprintf("not found path %s", urlInfo.Path))
+		}
+	}
 }
 
 func (server *Server) RunDefault() error {
