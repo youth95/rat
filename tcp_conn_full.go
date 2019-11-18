@@ -1,7 +1,6 @@
 package rat
 
 import (
-	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -47,7 +46,7 @@ func (conn *TcpConnFull) ReadFull(b []byte, limit time.Duration) error {
 		return io.EOF
 	}
 	//b = result
-	fmt.Println("ReadFull", b)
+	//fmt.Println("ReadFull", b)
 	return nil
 }
 
@@ -55,7 +54,7 @@ func (conn *TcpConnFull) ReadFull(b []byte, limit time.Duration) error {
 func (conn *TcpConnFull) WriteFull(p []byte, limit time.Duration) error {
 	conn.w.Lock()
 	defer conn.w.Unlock()
-	fmt.Println("WriteFull", p)
+	//fmt.Println("WriteFull", p)
 
 	l := len(p)
 	for l > 0 {
